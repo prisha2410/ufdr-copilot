@@ -9,12 +9,12 @@ builds knowledge graphs, and generates explainable UFDR-style reports.
 
 ## Team & Responsibilities
 
-| Member | Role | Modules |
-|--------|------|---------|
-| Member 1 | Data & Indexing | `data_pipeline/`, `indexing/`, `api/` |
-| Member 2 | Retrieval & Reranker | `retrieval/` |
-| Member 3 | Agent & Tool Policy | `agent/` |
-| Member 4 | Case, Graph & Report | `case_engine/`, `evaluation/` |
+| Role | Modules |
+|------|---------|
+| Data & Indexing | `data_pipeline/`, `indexing/`, `api/` |
+| Retrieval & Reranker | `retrieval/` |
+| Agent & Tool Policy | `agent/` |
+| Case, Graph & Report | `case_engine/`, `evaluation/` |
 
 ---
 
@@ -95,7 +95,7 @@ info = client.stats()
 
 ---
 
-## Pipeline Execution Order (Member 1 only)
+## Pipeline Execution Order (Data & Indexing role only)
 
 ```bash
 python data_pipeline/data_pipeline.py      # Step 1 — CSV → JSONL
@@ -130,21 +130,21 @@ Full interactive docs: `https://ufdr-api.onrender.com/docs`
 ## Branching Strategy
 
 ```
-main                ← stable, merged code only
-member1/indexing    ← Member 1 work
-member2/retrieval   ← Member 2 work
-member3/agent       ← Member 3 work
-member4/case-engine ← Member 4 work
+main        ← stable, merged code only
+indexing    ← data pipeline + indexing + API
+retrieval   ← retriever + reranker
+agent       ← agent + tool policy
+case-engine ← case builder + graph + report + evaluation
 ```
 
-Each member works on their branch and opens a Pull Request to `main`.  
+Each person works on their branch and opens a Pull Request to `main`.  
 Never push directly to `main`.
 
 ---
 
 ## Insider Threat Scenarios (from CERT r4.2)
 
-The dataset contains 5 insider threat scenarios your system must detect:
+The dataset contains 5 insider threat scenarios the system must detect:
 
 | # | Type | Key Signals |
 |---|------|-------------|
@@ -173,10 +173,9 @@ The dataset contains 5 insider threat scenarios your system must detect:
 ## Ground Truth
 
 ```
-D:/dl_proj/answers/insiders.csv   ← malicious users + time ranges
-D:/dl_proj/answers/scenarios.txt  ← scenario descriptions
+answers/insiders.csv   ← malicious users + time ranges
+answers/scenarios.txt  ← scenario descriptions
 ```
 
-Use `insiders.csv` to evaluate whether your system correctly identifies
+Use `insiders.csv` to evaluate whether the system correctly identifies
 the malicious users defined in each scenario.
-
