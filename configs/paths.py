@@ -4,9 +4,13 @@ configs/paths.py
 Central path configuration for the UFDR Copilot project.
 Each team member edits ONLY this file to match their local setup.
 """
-
 import os
 
+# Allow environment variables to override local paths
+PAGEINDEX_STORE = os.getenv("PAGEINDEX_STORE", "D:/dl_proj/pageindex_store")
+FAISS_DIR       = os.getenv("FAISS_DIR",       "D:/dl_proj/faiss_index")
+CHROMA_DIR      = os.getenv("CHROMA_DIR",      "D:/dl_proj/chroma_store")
+PAGEINDEX_DIR   = os.getenv("PAGEINDEX_DIR",   "D:/dl_proj/pageindex_data")
 # ─────────────────────────────────────────────
 # RAW DATA  (downloaded from CMU KiltHub)
 # ─────────────────────────────────────────────
