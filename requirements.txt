@@ -2,7 +2,7 @@
 # Install: pip install -r requirements.txt
 
 # ── Core ──────────────────────────────────────
-pandas==2.2.2
+pandas>=2.0.0
 numpy==1.26.4
 
 # ── Embeddings ────────────────────────────────
