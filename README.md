@@ -108,7 +108,7 @@ python api/server.py                       # Step 6 — start API server
 
 > **Note:** http.jsonl (7.76 GB) is excluded from ChromaDB/FAISS to save time.
 > HTTP browsing logs are served via the `/http_search` keyword endpoint instead.
-> For full http semantic search, run `python indexing/build_chroma_http.py` (6–8 hrs).
+> For full http semantic search, run `python indexing/build_chroma_http.py` (6–8 hrs)
 
 ---
 
