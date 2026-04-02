@@ -1,0 +1,44 @@
+# ── Python ────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+venv/
+.env
+.venv/
+
+# ── Data files (TOO LARGE for git) ────────────
+*.csv
+*.jsonl
+*.npy
+*.bin
+r4.2/
+r4.1/
+processed_data/
+processed data/
+pageindex_data/
+
+# ── Index files (rebuilt locally) ─────────────
+*.pkl
+*.index
+chroma_store/
+faiss_index/
+pageindex_store/
+
+# ── OS ────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Secrets ───────────────────────────────────
+.env
+*.env
+server.env
