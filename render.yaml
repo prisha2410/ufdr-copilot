@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: ufdr-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python api/startup.py && python api/server.py
+    envVars:
+      - key: PAGEINDEX_STORE
+        value: /data/pageindex_store
+      - key: FAISS_DIR
+        value: /data/faiss_index
+      - key: PAGEINDEX_DIR
+        value: /data/pageindex_data

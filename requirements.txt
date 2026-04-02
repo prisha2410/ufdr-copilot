@@ -26,3 +26,5 @@ requests==2.32.3
 # ── Utilities ────────────────────────────────
 tqdm==4.66.4
 python-dotenv==1.0.1
+
+gdown==5.1.0
