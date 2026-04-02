@@ -9,21 +9,20 @@ All other members call it via http://MEMBER1_IP:8000
 Start the server:
     python api/server.py
 
-Or with uvicorn for auto-reload during development:
-    uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
-
 Endpoints:
     GET /health                    → liveness check
     GET /filter                    → structured PageIndex query
     GET /vector                    → semantic FAISS query
     GET /record/{page_id}          → single record by page_id
     GET /stats                     → index statistics
+    GET /http_search               → search browsing logs
 """
 
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
+import json
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -33,7 +32,7 @@ from indexing.retriever_api import get_by_filter, get_by_vector, get_by_id, warm
 from indexing.retriever_api import (
     _load_user_index, _load_action_index, _load_record_store
 )
-from configs.paths import API_HOST, API_PORT
+from configs.paths import API_HOST, API_PORT, PAGEINDEX_DIR
 
 
 # ─────────────────────────────────────────────
@@ -42,9 +41,9 @@ from configs.paths import API_HOST, API_PORT
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 Starting UFDR Retriever Server ...")
+    print("Starting UFDR Retriever Server ...")
     warmup()
-    print("✅ Server ready")
+    print("Server ready")
     yield
 
 app = FastAPI(
@@ -83,8 +82,8 @@ def filter_endpoint(
     top_k:      int           = Query(50, ge=1, le=500),
 ):
     """
-    Structured retrieval — uses PageIndex maps, no ML.
-    Fast and exact. All parameters are ANDed together.
+    Structured retrieval using PageIndex maps.
+    All parameters are ANDed together.
 
     Example:
         GET /filter?user=LAP0338&action=connect_device&hour_min=18
@@ -105,8 +104,8 @@ def vector_endpoint(
     event_type: Optional[str] = Query(None, description="Post-filter by event type"),
 ):
     """
-    Semantic retrieval — FAISS cosine similarity search.
-    Each result includes a 'score' field (higher = more similar).
+    Semantic retrieval using FAISS cosine similarity search.
+    Each result includes a score field (higher = more similar).
 
     Example:
         GET /vector?query=employee+copying+files+after+hours&top_k=20
@@ -138,10 +137,58 @@ def stats_endpoint():
     action_idx = _load_action_index()
     rec_store  = _load_record_store()
     return {
-        "total_records": len(rec_store),
-        "unique_users":  len(user_idx),
+        "total_records":  len(rec_store),
+        "unique_users":   len(user_idx),
         "unique_actions": list(action_idx.keys()),
     }
+
+
+@app.get("/http_search")
+def http_search_endpoint(
+    user:    Optional[str] = Query(None, description="e.g. LAP0338"),
+    keyword: Optional[str] = Query(None, description="e.g. wikileaks"),
+    date:    Optional[str] = Query(None, description="e.g. 2010-02-01"),
+    top_k:   int           = Query(50, ge=1, le=500),
+):
+    """
+    Search http.jsonl directly by streaming (no index needed).
+    Use for URL/browsing queries.
+
+    Example:
+        GET /http_search?user=LAP0338&keyword=wikileaks
+        GET /http_search?keyword=dropbox&date=2010-02-01
+    """
+    path = os.path.join(PAGEINDEX_DIR, "http.jsonl")
+
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="http.jsonl not found")
+
+    results = []
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+
+                if user and record.get("user") != user:
+                    continue
+                if date and record.get("date") != date:
+                    continue
+                if keyword and keyword.lower() not in record.get("text", "").lower():
+                    continue
+
+                results.append(record)
+
+                if len(results) >= top_k:
+                    break
+
+            except Exception:
+                continue
+
+    return {"count": len(results), "results": results}
 
 
 # ─────────────────────────────────────────────

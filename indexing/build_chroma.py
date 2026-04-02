@@ -10,6 +10,8 @@ ChromaDB is the persistent storage layer — run this ONCE.
 build_faiss.py and retriever_api.py load from here so embeddings are
 never recomputed.
 
+Safe to re-run — already embedded files are skipped automatically.
+
 Run after build_pageindex.py:
     python indexing/build_chroma.py
 """
@@ -20,7 +22,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 import json
 import chromadb
-from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
 from configs.paths import PAGEINDEX_DIR, CHROMA_DIR, EMBEDDING_MODEL
 
@@ -29,12 +30,21 @@ JSONL_FILES = [
     "logon.jsonl",
     "device.jsonl",
     "file.jsonl",
-    "http.jsonl",
     "ldap.jsonl",
     "psychometric.jsonl",
 ]
 
-BATCH_SIZE = 512          # records per ChromaDB upsert call
+# Expected record counts per file (used to detect already-done files)
+EXPECTED_COUNTS = {
+    "email.jsonl":        1_000_037,
+    "logon.jsonl":          329_511,
+    "device.jsonl":         156_911,
+    "file.jsonl":           171_112,
+    "ldap.jsonl":              None,   # small, always fast
+    "psychometric.jsonl":      None,   # small, always fast
+}
+
+BATCH_SIZE = 512
 COLLECTION = "ufdr_events"
 
 
@@ -55,7 +65,6 @@ def load_records_from_jsonl(path: str) -> list[dict]:
 def chroma_metadata(record: dict) -> dict:
     """
     ChromaDB metadata must be flat (str/int/float/bool only).
-    We keep the fields Member 2 needs for filtering.
     """
     return {
         "page_id":     str(record.get("page_id", "")),
@@ -70,30 +79,65 @@ def chroma_metadata(record: dict) -> dict:
     }
 
 
+def already_embedded(collection, fname: str) -> bool:
+    """
+    Check if a file's records are already in ChromaDB.
+    Uses expected count to decide — if count matches, skip.
+    """
+    expected = EXPECTED_COUNTS.get(fname)
+    if expected is None:
+        return False   # small files, always re-run (fast anyway)
+
+    # Sample a few IDs from this file's prefix
+    prefix = fname.replace(".jsonl", "")
+    try:
+        result = collection.get(
+            where={"source_file": {"$eq": fname}},
+            limit=1,
+            include=[],
+        )
+        if len(result["ids"]) > 0:
+            print(f"    Already embedded — skipping {fname}")
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def build_chroma():
     print("Loading embedding model:", EMBEDDING_MODEL)
     model = SentenceTransformer(EMBEDDING_MODEL)
 
     print("Connecting to ChromaDB at:", CHROMA_DIR)
-    client = chromadb.Client(Settings(
-        chroma_db_impl="duckdb+parquet",
-        persist_directory=CHROMA_DIR,
-        anonymized_telemetry=False,
-    ))
+    client = chromadb.PersistentClient(path=CHROMA_DIR)
 
     # Get or create collection
     collection = client.get_or_create_collection(
         name=COLLECTION,
         metadata={"hnsw:space": "cosine"},
     )
-    print(f"Collection '{COLLECTION}' ready (existing docs: {collection.count()})")
+
+    existing = collection.count()
+    print(f"Collection '{COLLECTION}' ready (existing docs: {existing:,})")
+
+    # If all main files already done, skip everything
+    if existing >= 1_657_571:
+        print("\n  All records already in ChromaDB — nothing to do!")
+        print(f"\n✅  STEP 4 COMPLETE — {existing:,} records in ChromaDB")
+        return existing
 
     total_added = 0
 
     for fname in JSONL_FILES:
         path = os.path.join(PAGEINDEX_DIR, fname)
         if not os.path.exists(path):
-            print(f"  SKIP: {fname}")
+            print(f"  SKIP (not found): {fname}")
+            continue
+
+        # Skip already embedded files
+        if already_embedded(collection, fname):
+            expected = EXPECTED_COUNTS.get(fname) or 0
+            total_added += expected
             continue
 
         records = load_records_from_jsonl(path)
@@ -106,10 +150,10 @@ def build_chroma():
             ids       = [r["page_id"] for r in batch]
             metadatas = [chroma_metadata(r) for r in batch]
 
-            # Embed
-            embeddings = model.encode(texts, batch_size=64, show_progress_bar=False).tolist()
+            embeddings = model.encode(
+                texts, batch_size=64, show_progress_bar=False
+            ).tolist()
 
-            # Upsert (safe to re-run)
             collection.upsert(
                 ids=ids,
                 embeddings=embeddings,
@@ -122,10 +166,9 @@ def build_chroma():
 
         print(f"    {fname} — done ({len(records):,} records)")
 
-    # Persist to disk
-    client.persist()
-    print(f"\n✅  STEP 4 COMPLETE — {total_added:,} records in ChromaDB at {CHROMA_DIR}")
-    return collection.count()
+    final_count = collection.count()
+    print(f"\n✅  STEP 4 COMPLETE — {final_count:,} records in ChromaDB at {CHROMA_DIR}")
+    return final_count
 
 
 if __name__ == "__main__":
@@ -134,6 +177,7 @@ if __name__ == "__main__":
     print(f"  Source    : {PAGEINDEX_DIR}")
     print(f"  ChromaDB  : {CHROMA_DIR}")
     print(f"  Model     : {EMBEDDING_MODEL}")
+    print("  Note      : Already embedded files are skipped")
     print("=" * 50)
 
     count = build_chroma()

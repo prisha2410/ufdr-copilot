@@ -16,6 +16,9 @@ Usage:
     # Semantic search
     records = client.vector("employee copying files after hours", top_k=20)
 
+    # Browsing logs search
+    records = client.http_search(keyword="wikileaks")
+
     # Single record
     rec = client.get_record("email_000123")
 
@@ -27,7 +30,6 @@ import os
 import requests
 from typing import Optional
 
-# Read host from environment so each member only changes one variable
 _DEFAULT_HOST = "http://localhost:8000"
 
 
@@ -41,7 +43,6 @@ class RetrieverClient:
     # ─────────────────────────────────────────
 
     def _get(self, endpoint: str, params: dict) -> dict:
-        # Remove None values so the server uses its defaults
         clean = {k: v for k, v in params.items() if v is not None}
         url   = f"{self.base_url}{endpoint}"
         try:
@@ -61,7 +62,7 @@ class RetrieverClient:
             resp.raise_for_status()
         except Exception:
             print(
-                f"⚠️  Warning: UFDR Retriever at {self.base_url} is not responding. "
+                f"Warning: UFDR Retriever at {self.base_url} is not responding. "
                 "Set RETRIEVER_HOST or ask Member 1 to start the server."
             )
 
@@ -85,14 +86,21 @@ class RetrieverClient:
         Parameters
         ----------
         user       : e.g. "LAP0338"
-        action     : e.g. "connect_device", "send_email", "login", "file_copy", "visit_url"
+        action     : "connect_device" | "send_email" | "login" | "file_copy" | "visit_url"
         date       : e.g. "2010-02-01"
-        hour_min   : 0–23  (use hour_min=18 for after-hours start)
-        hour_max   : 0–23  (use hour_max=7  for after-hours end)
+        hour_min   : 0-23  (e.g. hour_min=18 for after-hours start)
+        hour_max   : 0-23  (e.g. hour_max=7  for early morning)
         event_type : "email" | "logon" | "device" | "file" | "http"
         top_k      : max records to return (default 50)
 
         Returns list of record dicts, sorted newest-first.
+
+        Example:
+            # All after-hours device connections
+            records = client.filter(action="connect_device", hour_min=18)
+
+            # All emails by a specific user
+            records = client.filter(user="LAP0338", event_type="email")
         """
         data = self._get("/filter", {
             "user": user, "action": action, "date": date,
@@ -110,7 +118,7 @@ class RetrieverClient:
     ) -> list[dict]:
         """
         Semantic search using FAISS.
-        Each result has an added 'score' field (0–1, higher = more relevant).
+        Each result has an added 'score' field (0-1, higher = more relevant).
 
         Parameters
         ----------
@@ -118,6 +126,10 @@ class RetrieverClient:
         top_k      : number of results (default 20)
         user       : optional post-filter by user
         event_type : optional post-filter by event type
+
+        Example:
+            records = client.vector("employee copying files after hours", top_k=20)
+            records = client.vector("data exfiltration", user="LAP0338")
         """
         data = self._get("/vector", {
             "query": query, "top_k": top_k,
@@ -125,8 +137,47 @@ class RetrieverClient:
         })
         return data.get("results", [])
 
+    def http_search(
+        self,
+        user:    Optional[str] = None,
+        keyword: Optional[str] = None,
+        date:    Optional[str] = None,
+        top_k:   int           = 50,
+    ) -> list[dict]:
+        """
+        Search browsing logs (http.jsonl) by user, keyword, or date.
+        Streams directly — no index needed.
+
+        Parameters
+        ----------
+        user    : e.g. "LAP0338"
+        keyword : e.g. "wikileaks", "dropbox", "jobsite"
+        date    : e.g. "2010-02-01"
+        top_k   : max records to return (default 50)
+
+        Example:
+            # Find wikileaks uploads
+            records = client.http_search(keyword="wikileaks")
+
+            # Find dropbox activity by specific user
+            records = client.http_search(user="LAP0338", keyword="dropbox")
+
+            # All browsing on a specific date
+            records = client.http_search(date="2010-02-01")
+        """
+        data = self._get("/http_search", {
+            "user": user, "keyword": keyword,
+            "date": date, "top_k": top_k,
+        })
+        return data.get("results", [])
+
     def get_record(self, page_id: str) -> Optional[dict]:
-        """Fetch a single evidence record by its page_id."""
+        """
+        Fetch a single evidence record by its page_id.
+
+        Example:
+            rec = client.get_record("email_000123")
+        """
         try:
             return self._get(f"/record/{page_id}", {})
         except requests.exceptions.HTTPError as e:
