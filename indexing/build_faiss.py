@@ -1,10 +1,10 @@
 """
 indexing/build_faiss.py
 ------------------------
-STEP 5 of Member 1's pipeline.
+STEP 5 of the pipeline.
 
 Builds FAISS index directly from PageIndex JSONL files.
-(Faster than loading from ChromaDB for large datasets)
+Uses GPU for embedding if available (much faster).
 
 Saves:
     faiss_index/events.index      ← FAISS binary index
@@ -22,6 +22,7 @@ import json
 import pickle
 import numpy as np
 import faiss
+import torch
 from sentence_transformers import SentenceTransformer
 from configs.paths import PAGEINDEX_DIR, FAISS_DIR, EMBEDDING_MODEL
 
@@ -34,14 +35,23 @@ JSONL_FILES = [
     "psychometric.jsonl",
 ]
 
-ENCODE_BATCH = 1_000   # records to embed at once
-INDEX_FILE   = os.path.join(FAISS_DIR, "events.index")
-MAP_FILE     = os.path.join(FAISS_DIR, "page_id_map.pkl")
+INDEX_FILE = os.path.join(FAISS_DIR, "events.index")
+MAP_FILE   = os.path.join(FAISS_DIR, "page_id_map.pkl")
 
 
 def build_faiss():
-    print("Loading embedding model:", EMBEDDING_MODEL)
-    model = SentenceTransformer(EMBEDDING_MODEL)
+    # ── Device detection ──────────────────────────────────────────────
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Device: {device.upper()}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+    # ── Batch size — bigger on GPU ────────────────────────────────────
+    ENCODE_BATCH = 512 if device == "cpu" else 1_000
+    READ_BATCH   = 1_000
+
+    print(f"Loading embedding model: {EMBEDDING_MODEL}")
+    model = SentenceTransformer(EMBEDDING_MODEL, device=device)
 
     all_embeddings = []
     all_page_ids   = []
@@ -73,9 +83,12 @@ def build_faiss():
                 except Exception:
                     continue
 
-                if len(batch_texts) >= ENCODE_BATCH:
+                if len(batch_texts) >= READ_BATCH:
                     embs = model.encode(
-                        batch_texts, batch_size=64, show_progress_bar=False
+                        batch_texts,
+                        batch_size=ENCODE_BATCH,
+                        show_progress_bar=False,
+                        convert_to_numpy=True,
                     )
                     all_embeddings.append(embs)
                     all_page_ids.extend(batch_ids)
@@ -87,7 +100,10 @@ def build_faiss():
         # Last batch
         if batch_texts:
             embs = model.encode(
-                batch_texts, batch_size=64, show_progress_bar=False
+                batch_texts,
+                batch_size=ENCODE_BATCH,
+                show_progress_bar=False,
+                convert_to_numpy=True,
             )
             all_embeddings.append(embs)
             all_page_ids.extend(batch_ids)
