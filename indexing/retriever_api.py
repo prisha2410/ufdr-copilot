@@ -25,7 +25,16 @@ import pickle
 import numpy as np
 from functools import lru_cache
 from typing import Optional
-from configs.paths import PAGEINDEX_STORE, FAISS_DIR, EMBEDDING_MODEL
+
+# ─────────────────────────────────────────────
+# PATHS — read directly from env vars
+# (bypasses configs/paths.py to ensure Render
+#  env vars are always picked up correctly)
+# ─────────────────────────────────────────────
+PAGEINDEX_STORE = os.getenv("PAGEINDEX_STORE", "D:/dl_proj/pageindex_store")
+FAISS_DIR       = os.getenv("FAISS_DIR",       "D:/dl_proj/faiss_index")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
 
 # ─────────────────────────────────────────────
 # LAZY LOADERS  (load once, cache in RAM)
@@ -185,6 +194,8 @@ def get_by_id(page_id: str) -> Optional[dict]:
 
 def warmup():
     """Pre-load all indexes into RAM. Call this on server startup."""
+    print(f"  PAGEINDEX_STORE: {PAGEINDEX_STORE}")
+    print(f"  FAISS_DIR: {FAISS_DIR}")
     print("  Warming up PageIndex maps ...")
     _load_user_index()
     _load_action_index()
@@ -195,4 +206,4 @@ def warmup():
     _load_faiss()
     print("  Warming up embedding model ...")
     _load_embedding_model()
-    print("  ✅ Warmup complete")
+    print("  Warmup complete")
