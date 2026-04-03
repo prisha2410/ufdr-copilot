@@ -3,18 +3,10 @@ indexing/retriever_api.py
 --------------------------
 Core retrieval logic — used by api/server.py.
 
-Member 2 does NOT import this directly; they call the FastAPI endpoints.
-But this module is the heart of what every endpoint does.
-
-Two primary functions:
-    get_by_filter(user, action, date, hour_range, event_type, top_k)
-        → structured PageIndex lookup (zero ML, very fast)
-
-    get_by_vector(query_text, top_k, filters)
-        → semantic FAISS search (with optional post-filter)
-
-    get_by_id(page_id)
-        → single record lookup from record_store
+Optimized for Render free tier (512MB RAM):
+- PageIndex maps load at startup (~110MB total)
+- FAISS index loads lazily on first /vector request (~2.4GB, may OOM on free tier)
+- record_store loads at startup (~1.2GB) — if OOM, disable FAISS warmup
 """
 
 import sys
@@ -28,8 +20,6 @@ from typing import Optional
 
 # ─────────────────────────────────────────────
 # PATHS — read directly from env vars
-# (bypasses configs/paths.py to ensure Render
-#  env vars are always picked up correctly)
 # ─────────────────────────────────────────────
 PAGEINDEX_STORE = os.getenv("PAGEINDEX_STORE", "D:/dl_proj/pageindex_store")
 FAISS_DIR       = os.getenv("FAISS_DIR",       "D:/dl_proj/faiss_index")
@@ -42,6 +32,7 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
 @lru_cache(maxsize=1)
 def _load_user_index():
+    print(f"  Loading user_index from {PAGEINDEX_STORE}")
     with open(os.path.join(PAGEINDEX_STORE, "user_index.pkl"), "rb") as f:
         return pickle.load(f)
 
@@ -152,8 +143,7 @@ def get_by_vector(
 ) -> list[dict]:
     """
     Semantic retrieval using FAISS.
-    Optional user / event_type post-filters applied after vector search.
-    Returns a list of full record dicts with an added 'score' field.
+    Loads lazily on first call.
     """
     import faiss  # noqa
 
@@ -161,10 +151,8 @@ def get_by_vector(
     record_store       = _load_record_store()
     model              = _load_embedding_model()
 
-    # Embed query
     vec = model.encode([query_text], normalize_embeddings=True).astype(np.float32)
 
-    # Search — fetch extra candidates to absorb post-filter losses
     fetch_k = min(top_k * 5, index.ntotal)
     scores, positions = index.search(vec, fetch_k)
 
@@ -193,17 +181,25 @@ def get_by_id(page_id: str) -> Optional[dict]:
 
 
 def warmup():
-    """Pre-load all indexes into RAM. Call this on server startup."""
-    print(f"  PAGEINDEX_STORE: {PAGEINDEX_STORE}")
-    print(f"  FAISS_DIR: {FAISS_DIR}")
-    print("  Warming up PageIndex maps ...")
+    """
+    Pre-load only PageIndex maps at startup.
+    FAISS and embedding model load lazily on first /vector request.
+    This keeps startup RAM under 512MB for Render free tier.
+    """
+    print(f"  PAGEINDEX_STORE : {PAGEINDEX_STORE}")
+    print(f"  FAISS_DIR       : {FAISS_DIR}")
+
+    print("  Loading user_index ...")
     _load_user_index()
+    print("  Loading action_index ...")
     _load_action_index()
+    print("  Loading date_index ...")
     _load_date_index()
+    print("  Loading hour_index ...")
     _load_hour_index()
-    _load_record_store()
-    print("  Warming up FAISS index ...")
-    _load_faiss()
-    print("  Warming up embedding model ...")
-    _load_embedding_model()
-    print("  Warmup complete")
+
+    # Skip record_store, FAISS and embedding model at startup
+    # They load lazily on first request
+    print("  Skipping record_store + FAISS at startup (lazy load)")
+    print("  Warmup complete — /filter and /record ready")
+    print("  /vector will load FAISS on first request (~30s delay)")
