@@ -33,7 +33,7 @@ from indexing.retriever_api import (
     _load_user_index, _load_action_index, _load_record_store
 )
 from configs.paths import API_HOST, API_PORT, PAGEINDEX_DIR
-
+from startup import FAISS_DIR, PAGEINDEX_STORE
 
 # ─────────────────────────────────────────────
 # APP SETUP
