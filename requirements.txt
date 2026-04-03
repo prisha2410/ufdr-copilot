@@ -10,8 +10,8 @@ sentence-transformers==3.0.1
 torch>=2.0.0                    # CPU version; for GPU: pip install torch --index-url https://download.pytorch.org/whl/cu118
 
 # ── Vector Search ─────────────────────────────
-# faiss-cpu==1.8.0                # CPU FAISS; swap for faiss-gpu if you have CUDA
-faiss-gpu==1.7.4              # uncomment for GPU support
+faiss-cpu             # CPU FAISS; swap for faiss-gpu if you have CUDA
+#faiss-gpu==1.7.4              # uncomment for GPU support
 
 # ── Persistent Vector Store ───────────────────
 chromadb==0.5.0
