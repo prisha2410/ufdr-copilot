@@ -67,7 +67,7 @@ Edit `configs/paths.py` — this is the **only file you need to change** for you
 ### 5. Connect to the API
 ```bash
 # Add to .env file (never commit this)
-RETRIEVER_HOST=https://ufdr-api.onrender.com
+RETRIEVER_HOST=https://ufdr-copilot-api.onrender.com
 ```
 
 ### 6. Use the client
