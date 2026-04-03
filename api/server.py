@@ -196,4 +196,5 @@ def http_search_endpoint(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api.server:app", host=API_HOST, port=API_PORT, reload=False)
+    port = int(os.environ.get("PORT", API_PORT))
+    uvicorn.run("api.server:app", host="0.0.0.0", port=port, reload=False)
