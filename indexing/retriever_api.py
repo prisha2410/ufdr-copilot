@@ -182,24 +182,10 @@ def get_by_id(page_id: str) -> Optional[dict]:
 
 def warmup():
     """
-    Pre-load only PageIndex maps at startup.
-    FAISS and embedding model load lazily on first /vector request.
-    This keeps startup RAM under 512MB for Render free tier.
+    Minimal warmup — load nothing at startup to fit 512MB RAM.
+    Everything loads lazily on first request.
     """
     print(f"  PAGEINDEX_STORE : {PAGEINDEX_STORE}")
     print(f"  FAISS_DIR       : {FAISS_DIR}")
-
-    print("  Loading user_index ...")
-    _load_user_index()
-    print("  Loading action_index ...")
-    _load_action_index()
-    print("  Loading date_index ...")
-    _load_date_index()
-    print("  Loading hour_index ...")
-    _load_hour_index()
-
-    # Skip record_store, FAISS and embedding model at startup
-    # They load lazily on first request
-    print("  Skipping record_store + FAISS at startup (lazy load)")
-    print("  Warmup complete — /filter and /record ready")
-    print("  /vector will load FAISS on first request (~30s delay)")
+    print("  Lazy loading enabled — indexes load on first request")
+    print("  Warmup complete")
