@@ -3,72 +3,48 @@ client/retriever_client.py
 ---------------------------
 HTTP client for the UFDR Retriever API.
 
-Members 2, 3, and 4 import this — they never touch the server or indexes.
-
 Usage:
     from client.retriever_client import RetrieverClient
+    client = RetrieverClient()
+    records = client.filter(user="LAP0338", action="connect_device")
 
-    client = RetrieverClient()   # reads RETRIEVER_HOST from env or uses default
+Setup:
+    Create .env file in repo root:
+    RETRIEVER_HOST=https://YOUR-NGROK-URL.ngrok-free.app
 
-    # Structured filter
-    records = client.filter(user="LAP0338", action="connect_device", hour_min=18)
-
-    # Semantic search
-    records = client.vector("employee copying files after hours", top_k=20)
-
-    # Browsing logs search
-    records = client.http_search(keyword="wikileaks")
-
-    # Single record
-    rec = client.get_record("email_000123")
-
-Set RETRIEVER_HOST in your environment or .env file:
-    RETRIEVER_HOST=http://192.168.x.x:8000
+Note:
+    The Colab URL changes every session.
+    Update RETRIEVER_HOST in .env each time a new session starts.
 """
 
 import os
 import requests
+from dotenv import load_dotenv
 from typing import Optional
 
-_DEFAULT_HOST = "http://localhost:8000"
-
+load_dotenv()
 
 class RetrieverClient:
-    def __init__(self, base_url: Optional[str] = None):
-        self.base_url = (base_url or os.getenv("RETRIEVER_HOST", _DEFAULT_HOST)).rstrip("/")
-        self._check_health()
+    def __init__(self, host: str = None):
+        self.host = (host or os.getenv("RETRIEVER_HOST", "http://localhost:8000")).rstrip("/")
 
-    # ─────────────────────────────────────────
-    # INTERNALS
-    # ─────────────────────────────────────────
-
-    def _get(self, endpoint: str, params: dict) -> dict:
-        clean = {k: v for k, v in params.items() if v is not None}
-        url   = f"{self.base_url}{endpoint}"
+    def _get(self, endpoint: str, params: dict = None):
+        url = f"{self.host}{endpoint}"
         try:
-            resp = requests.get(url, params=clean, timeout=30)
+            resp = requests.get(url, params=params, timeout=120)
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.ConnectionError:
             raise ConnectionError(
-                f"Cannot reach UFDR Retriever at {self.base_url}. "
-                "Make sure Member 1 has started api/server.py and set "
-                "RETRIEVER_HOST correctly."
+                f"Cannot connect to API at {self.host}\n"
+                f"Make sure the Colab server is running and RETRIEVER_HOST is set in .env"
             )
+        except Exception as e:
+            raise RuntimeError(f"API error: {e}")
 
-    def _check_health(self):
-        try:
-            resp = requests.get(f"{self.base_url}/health", timeout=5)
-            resp.raise_for_status()
-        except Exception:
-            print(
-                f"Warning: UFDR Retriever at {self.base_url} is not responding. "
-                "Set RETRIEVER_HOST or ask Member 1 to start the server."
-            )
-
-    # ─────────────────────────────────────────
-    # PUBLIC METHODS
-    # ─────────────────────────────────────────
+    def health(self) -> dict:
+        """Check if server is running."""
+        return self._get("/health")
 
     def filter(
         self,
@@ -79,35 +55,35 @@ class RetrieverClient:
         hour_max:   Optional[int] = None,
         event_type: Optional[str] = None,
         top_k:      int           = 50,
-    ) -> list[dict]:
+    ) -> list:
         """
         Structured retrieval using PageIndex maps.
 
-        Parameters
-        ----------
-        user       : e.g. "LAP0338"
-        action     : "connect_device" | "send_email" | "login" | "file_copy" | "visit_url"
-        date       : e.g. "2010-02-01"
-        hour_min   : 0-23  (e.g. hour_min=18 for after-hours start)
-        hour_max   : 0-23  (e.g. hour_max=7  for early morning)
-        event_type : "email" | "logon" | "device" | "file" | "http"
-        top_k      : max records to return (default 50)
+        Args:
+            user:       e.g. "LAP0338"
+            action:     e.g. "connect_device", "send_email", "file_copy", "login"
+            date:       e.g. "2010-02-01"
+            hour_min:   e.g. 18 (6 PM)
+            hour_max:   e.g. 23 (11 PM)
+            event_type: e.g. "email", "logon", "device", "file"
+            top_k:      max records to return (default 50)
 
-        Returns list of record dicts, sorted newest-first.
+        Returns:
+            list of record dicts
 
-        Example:
-            # All after-hours device connections
-            records = client.filter(action="connect_device", hour_min=18)
-
-            # All emails by a specific user
-            records = client.filter(user="LAP0338", event_type="email")
+        Examples:
+            client.filter(user="LAP0338", action="connect_device", hour_min=18)
+            client.filter(date="2010-02-01", event_type="email")
+            client.filter(action="file_copy", hour_min=18, hour_max=23)
         """
-        data = self._get("/filter", {
+        params = {k: v for k, v in {
             "user": user, "action": action, "date": date,
             "hour_min": hour_min, "hour_max": hour_max,
             "event_type": event_type, "top_k": top_k,
-        })
-        return data.get("results", [])
+        }.items() if v is not None}
+
+        result = self._get("/filter", params)
+        return result.get("results", [])
 
     def vector(
         self,
@@ -115,84 +91,81 @@ class RetrieverClient:
         top_k:      int           = 20,
         user:       Optional[str] = None,
         event_type: Optional[str] = None,
-    ) -> list[dict]:
+    ) -> list:
         """
-        Semantic search using FAISS.
-        Each result has an added 'score' field (0-1, higher = more relevant).
+        Semantic FAISS search using natural language.
 
-        Parameters
-        ----------
-        query      : natural language query string
-        top_k      : number of results (default 20)
-        user       : optional post-filter by user
-        event_type : optional post-filter by event type
+        Args:
+            query:      natural language query
+            top_k:      max records to return (default 20)
+            user:       optional post-filter by user
+            event_type: optional post-filter by event type
 
-        Example:
-            records = client.vector("employee copying files after hours", top_k=20)
-            records = client.vector("data exfiltration", user="LAP0338")
+        Returns:
+            list of record dicts with 'score' field
+
+        Examples:
+            client.vector("employee stealing data before leaving company")
+            client.vector("suspicious USB activity after hours")
+            client.vector("insider threat wikileaks upload", user="LAP0338")
         """
-        data = self._get("/vector", {
+        params = {k: v for k, v in {
             "query": query, "top_k": top_k,
             "user": user, "event_type": event_type,
-        })
-        return data.get("results", [])
+        }.items() if v is not None}
+
+        result = self._get("/vector", params)
+        if isinstance(result, dict) and "error" in result:
+            print(f"Vector search unavailable: {result['error']}")
+            return []
+        return result.get("results", [])
 
     def http_search(
         self,
-        user:    Optional[str] = None,
-        keyword: Optional[str] = None,
-        date:    Optional[str] = None,
-        top_k:   int           = 50,
-    ) -> list[dict]:
+        keyword:    Optional[str] = None,
+        user:       Optional[str] = None,
+        date:       Optional[str] = None,
+        top_k:      int           = 50,
+    ) -> list:
         """
-        Search browsing logs (http.jsonl) by user, keyword, or date.
-        Streams directly — no index needed.
+        Search browsing logs (http_sample.jsonl — 10% unbiased sample).
 
-        Parameters
-        ----------
-        user    : e.g. "LAP0338"
-        keyword : e.g. "wikileaks", "dropbox", "jobsite"
-        date    : e.g. "2010-02-01"
-        top_k   : max records to return (default 50)
+        Args:
+            keyword: URL keyword e.g. "wikileaks", "dropbox", "linkedin"
+            user:    optional filter by user
+            date:    optional filter by date e.g. "2010-02-01"
+            top_k:   max records to return
 
-        Example:
-            # Find wikileaks uploads
-            records = client.http_search(keyword="wikileaks")
+        Returns:
+            list of http record dicts
 
-            # Find dropbox activity by specific user
-            records = client.http_search(user="LAP0338", keyword="dropbox")
-
-            # All browsing on a specific date
-            records = client.http_search(date="2010-02-01")
+        Examples:
+            client.http_search(keyword="wikileaks")
+            client.http_search(keyword="dropbox", user="LAP0338")
         """
-        data = self._get("/http_search", {
-            "user": user, "keyword": keyword,
+        params = {k: v for k, v in {
+            "keyword": keyword, "user": user,
             "date": date, "top_k": top_k,
-        })
-        return data.get("results", [])
+        }.items() if v is not None}
+
+        result = self._get("/http_search", params)
+        return result.get("results", [])
 
     def get_record(self, page_id: str) -> Optional[dict]:
         """
-        Fetch a single evidence record by its page_id.
+        Get a single record by page_id.
 
-        Example:
-            rec = client.get_record("email_000123")
+        Args:
+            page_id: e.g. "email_000123", "logon_000456"
+
+        Returns:
+            record dict or None if not found
         """
         try:
-            return self._get(f"/record/{page_id}", {})
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                return None
-            raise
+            return self._get(f"/record/{page_id}")
+        except Exception:
+            return None
 
     def stats(self) -> dict:
-        """Return index statistics from the server."""
-        return self._get("/stats", {})
-
-    def health(self) -> bool:
-        """Return True if server is up."""
-        try:
-            resp = requests.get(f"{self.base_url}/health", timeout=5)
-            return resp.status_code == 200
-        except Exception:
-            return False
+        """Get index statistics."""
+        return self._get("/stats")
