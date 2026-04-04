@@ -157,10 +157,10 @@ def http_search_endpoint(
         GET /http_search?user=LAP0338&keyword=wikileaks
         GET /http_search?keyword=dropbox&date=2010-02-01
     """
-    path = os.path.join(PAGEINDEX_DIR, "http.jsonl")
+    path = os.path.join(PAGEINDEX_DIR, "http_sample.jsonl")
 
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="http.jsonl not found")
+        raise HTTPException(status_code=404, detail="http_sample.jsonl not found")
 
     results = []
 
