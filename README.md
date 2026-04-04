@@ -1,158 +1,154 @@
-# UFDR Copilot — Forensic Investigation Support System
+# UFDR Copilot — Grounded Forensic Investigation System
 
-A hybrid Agentic RAG system that retrieves forensic evidence, constructs cases,
-builds knowledge graphs, and generates explainable UFDR-style reports.
-
-**Dataset:** CERT Insider Threat Dataset r4.2 (CMU SEI)
+MSc Data Science Group Project | CERT Insider Threat Dataset r4.2 | Due May 5, 2026
 
 ---
 
-## Team & Responsibilities
+## Live API
 
-| Role | Modules |
-|------|---------|
-| Data & Indexing | `data_pipeline/`, `indexing/`, `api/` |
-| Retrieval & Reranker | `retrieval/` |
-| Agent & Tool Policy | `agent/` |
-| Case, Graph & Report | `case_engine/`, `evaluation/` |
+```
+https://ufdr-copilot-api.onrender.com
+https://ufdr-copilot-api.onrender.com/docs
+```
+
+> Note: Free tier may take 50 seconds to wake up after inactivity. First request after wake-up will be slow (~30 sec) as indexes load from disk.
+
+---
+
+## Team Roles
+
+| Member | Role | Branch |
+|--------|------|--------|
+| Member 1 (Prisha) | Data & Indexing | indexing |
+| Member 2 | Retrieval & Reranker | retrieval |
+| Member 3 | Agent & Tool Policy | agent |
+| Member 4 | Case, Graph & Report | case-engine |
+
+---
+
+## Quick Start (All Members)
+
+```bash
+# 1. Clone
+git clone https://github.com/prisha2410/ufdr-copilot.git
+cd ufdr-copilot
+
+# 2. Install
+pip install -r requirements.txt
+
+# 3. Create .env
+echo "RETRIEVER_HOST=https://ufdr-copilot-api.onrender.com" > .env
+
+# 4. Use the client
+python -c "
+from client.retriever_client import RetrieverClient
+client = RetrieverClient()
+records = client.filter(user='LAP0338', action='connect_device')
+print(records[:2])
+"
+```
+
+---
+
+## API Endpoints
+
+| Endpoint | Description | Example |
+|----------|-------------|---------|
+| GET /health | Liveness check | /health |
+| GET /filter | Structured PageIndex query | /filter?user=LAP0338&action=connect_device |
+| GET /vector | Semantic FAISS search | /vector?query=data+theft+after+hours |
+| GET /record/{page_id} | Single record lookup | /record/email_000123 |
+| GET /stats | Index statistics | /stats |
+| GET /http_search | Browsing log search | /http_search?keyword=wikileaks |
+
+---
+
+## Client Usage
+
+```python
+from client.retriever_client import RetrieverClient
+client = RetrieverClient()
+
+# Structured filter
+records = client.filter(user="LAP0338", action="connect_device", hour_min=18)
+records = client.filter(date="2010-02-01", event_type="email")
+records = client.filter(action="file_copy", hour_min=18, hour_max=23)
+
+# Semantic search
+records = client.vector("employee stealing data before leaving company")
+records = client.vector("suspicious USB activity after hours")
+
+# HTTP browsing search
+records = client.http_search(keyword="wikileaks")
+records = client.http_search(keyword="dropbox", user="LAP0338")
+
+# Single record
+record = client.get_record("email_000123")
+```
 
 ---
 
 ## Architecture
 
 ```
-User Query
-    ↓
-[Agent]  agent/agent.py
-    ↓
-[Tool Policy]  agent/tool_policy.py
-    ↓
-[Hybrid Retriever]
- ├── PageIndex (structured filter)   → GET /filter
- ├── FAISS     (semantic search)     → GET /vector
- └── HTTP logs (browsing search)     → GET /http_search
-    ↓
-[Reranker]          retrieval/reranker.py
-    ↓
-[Case Builder]      case_engine/case_builder.py
-    ↓
-[Graph Builder]     case_engine/graph_builder.py
-    ↓
-[Report Generator]  case_engine/report_generator.py
-    ↓
-[Evaluation]        evaluation/evaluate.py
+CERT r4.2 CSVs
+      ↓
+data_pipeline.py        → JSONL files (1.67M records)
+enhance_pageindex.py    → adds page_id, date, hour, action fields
+      ↓
+build_pageindex.py      → user/action/date/hour index maps (pkl)
+build_chroma.py         → ChromaDB vector store
+build_faiss.py          → FAISS index (384-dim, 1.67M vectors)
+      ↓
+retriever_api.py        → core retrieval logic (disk-based, no OOM)
+server.py               → FastAPI server (6 endpoints)
+      ↓
+https://ufdr-copilot-api.onrender.com
+```
+
+### Infrastructure
+
+```
+Indexes:     HuggingFace — pisha2410/ufdr-indexes (public dataset)
+JSONL files: HuggingFace — pageindex_data/ folder
+Deployment:  Render free tier (512MB RAM)
+RAM usage:   ~110MB at startup (4 index maps only)
+Records:     Read from JSONL files on demand (disk-based)
 ```
 
 ---
 
-## Quick Start
+## Dataset
 
-### 1. Clone the repo
-```bash
-git clone https://github.com/prisha2410/ufdr-copilot.git
-cd ufdr-copilot
-```
+CERT Insider Threat Dataset r4.2 — Carnegie Mellon University SEI
 
-### 2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
+Download: https://kilthub.cmu.edu/articles/dataset/Insider_Threat_Test_Dataset/12841247
 
-### 3. Set up data
-See **[data/README.md](data/README.md)** for full instructions.
+| File | Records | Notes |
+|------|---------|-------|
+| email.jsonl | 1,000,037 | Full |
+| logon.jsonl | 329,511 | Full |
+| device.jsonl | 156,911 | Full |
+| file.jsonl | 171,112 | Full |
+| http_sample.jsonl | 1,082,684 | 10% unbiased sample |
+| ldap.jsonl | 16,743 | Full |
+| psychometric.jsonl | 1,000 | Full |
 
-### 4. Configure paths
-Edit `configs/paths.py` — this is the **only file you need to change** for your machine.
-
-### 5. Connect to the API
-```bash
-# Add to .env file (never commit this)
-RETRIEVER_HOST=https://ufdr-copilot-api.onrender.com
-```
-
-### 6. Use the client
-```python
-from client.retriever_client import RetrieverClient
-
-client = RetrieverClient()
-
-# Structured search (PageIndex)
-records = client.filter(user="LAP0338", action="connect_device", hour_min=18)
-
-# Semantic search (FAISS)
-records = client.vector("employee copying files after hours", top_k=20)
-
-# Browsing logs search (http.jsonl)
-records = client.http_search(keyword="wikileaks")
-records = client.http_search(user="LAP0338", keyword="dropbox")
-
-# Single record lookup
-rec = client.get_record("email_000123")
-
-# Server stats
-info = client.stats()
-```
+Temporal filter: Jan 1 - Jun 30, 2010
 
 ---
 
-## Pipeline Execution Order (Data & Indexing role only)
+## Insider Threat Scenarios
 
-```bash
-python data_pipeline/data_pipeline.py      # Step 1 — CSV → JSONL
-python data_pipeline/enhance_pageindex.py  # Step 2 — add PageIndex fields
-python indexing/build_pageindex.py         # Step 3 — build dict maps (http skipped)
-python indexing/build_chroma.py            # Step 4 — embed + persist ChromaDB (http skipped)
-python indexing/build_faiss.py             # Step 5 — build FAISS index
-python api/server.py                       # Step 6 — start API server
-```
+| # | Type | Key Signals | Best Endpoints |
+|---|------|-------------|----------------|
+| 1 | USB + Wikileaks | after-hours login, USB, wikileaks URL | /filter + /http_search |
+| 2 | Job switching + data theft | job site URLs, file downloads | /http_search + /filter |
+| 3 | Malicious admin | unusual file access, mass email | /filter + /vector |
+| 4 | Insider snooping | login to other machines | /filter |
+| 5 | Layoff revenge via Dropbox | dropbox URLs, bulk uploads | /http_search + /filter |
 
-> **Note:** http.jsonl (7.76 GB) is excluded from ChromaDB/FAISS to save time.
-> HTTP browsing logs are served via the `/http_search` keyword endpoint instead.
-> For full http semantic search, run `python indexing/build_chroma_http.py` (6–8 hrs)
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Server liveness check |
-| GET | `/filter` | Structured PageIndex query |
-| GET | `/vector` | Semantic FAISS query |
-| GET | `/record/{page_id}` | Single record lookup by page_id |
-| GET | `/stats` | Index statistics |
-| GET | `/http_search` | Search browsing logs by user/keyword/date |
-
-Full interactive docs: `https://ufdr-api.onrender.com/docs`
-
----
-
-## Branching Strategy
-
-```
-main        ← stable, merged code only
-indexing    ← data pipeline + indexing + API
-retrieval   ← retriever + reranker
-agent       ← agent + tool policy
-case-engine ← case builder + graph + report + evaluation
-```
-
-Each person works on their branch and opens a Pull Request to `main`.  
-Never push directly to `main`.
-
----
-
-## Insider Threat Scenarios (from CERT r4.2)
-
-The dataset contains 5 insider threat scenarios the system must detect:
-
-| # | Type | Key Signals |
-|---|------|-------------|
-| 1 | Data exfiltration via USB + Wikileaks | after-hours login, USB spike, wikileaks in http |
-| 2 | Job switching + data theft | job sites in http, increased downloads, USB usage |
-| 3 | Malicious admin (keylogger) | unusual file access, impersonation, mass email |
-| 4 | Insider snooping | login to other machines, external email |
-| 5 | Layoff revenge via Dropbox | dropbox in http, bulk file uploads |
+Ground truth: answers/insiders.csv + answers/scenarios.txt
 
 ---
 
@@ -160,22 +156,38 @@ The dataset contains 5 insider threat scenarios the system must detect:
 
 | Metric | Description |
 |--------|-------------|
-| Recall@K | % of relevant evidence retrieved |
-| Precision@K | % of retrieved evidence that is relevant |
-| Grounding Score | % of answers backed by cited evidence (doc_id + span) |
-| Tool Accuracy | % of correct tool call decisions by agent |
-
-**Baseline:** plain FAISS → LLM answer (no tools, no preference tuning)  
-**Improved:** PageIndex + FAISS + Reranker + Tool Policy Agent + Preference Alignment
+| Recall@K | % of relevant evidence in top-K results |
+| Precision@K | % of retrieved results that are relevant |
+| Grounding Score | % of claims backed by cited page_id |
+| Tool Accuracy | % correct tool decisions by agent |
 
 ---
 
-## Ground Truth
+## Local Development
 
-```
-answers/insiders.csv   ← malicious users + time ranges
-answers/scenarios.txt  ← scenario descriptions
+```bash
+# Run server locally
+python api/server.py
+
+# Server runs at http://localhost:8000
+# Docs at http://localhost:8000/docs
 ```
 
-Use `insiders.csv` to evaluate whether the system correctly identifies
-the malicious users defined in each scenario.
+### Local paths (edit configs/paths.py)
+
+```python
+DATA_PATH       = "D:/dl_proj/r4.2"
+PROCESSED_DIR   = "D:/dl_proj/processed data"
+PAGEINDEX_DIR   = "D:/dl_proj/pageindex_data"
+PAGEINDEX_STORE = "D:/dl_proj/pageindex_store"
+FAISS_DIR       = "D:/dl_proj/faiss_index"
+```
+
+---
+
+## Notes
+
+- /http_search uses a 10% unbiased random sample of http.jsonl (1.08M records)
+- FAISS and embedding model load lazily on first /vector request (~30 sec delay)
+- Free Render tier sleeps after 15 min inactivity - first request takes ~50 sec to wake
+- For demo day: hit /health every 10 min to keep server awake
