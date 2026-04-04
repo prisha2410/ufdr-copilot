@@ -4,17 +4,15 @@ api/server.py
 FastAPI server for Render free tier (512MB RAM).
 
 RAM strategy:
-- date_index, hour_index, action_index loaded at startup (~70MB)
-- user_index split into per-user JSON files on HuggingFace
-- Per-user file downloaded on demand (~100KB per request)
-- Records read from JSONL files on disk
-- Total startup RAM: ~150MB ✅
+- Only date/hour/action indexes loaded at startup (~70MB)
+- JSONL files downloaded from HuggingFace on first request (lazy)
+- Per-user JSON downloaded from HuggingFace on demand
+- Total startup RAM: ~100MB ✅ never OOMs
 """
 
 import os
 import json
 import pickle
-import tempfile
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,6 +27,7 @@ PAGEINDEX_STORE = os.getenv("PAGEINDEX_STORE", "D:/dl_proj/pageindex_store")
 PAGEINDEX_DIR   = os.getenv("PAGEINDEX_DIR",   "D:/dl_proj/pageindex_data")
 API_PORT        = int(os.getenv("API_PORT", "8000"))
 HF_REPO         = "pisha2410/ufdr-indexes"
+BASE_PATH       = os.path.join(os.path.dirname(__file__), "../data")
 
 _PREFIX_TO_FILE = {
     "email":        "email.jsonl",
@@ -63,10 +62,26 @@ def _load_small_indexes():
             print(f"  {name} failed: {e}")
 
 # ─────────────────────────────────────────────
+# LAZY JSONL DOWNLOAD
+# ─────────────────────────────────────────────
+def _ensure_jsonl(fname: str) -> str:
+    """Download JSONL file from HuggingFace if not already on disk."""
+    fpath = os.path.join(PAGEINDEX_DIR, fname)
+    if not os.path.exists(fpath):
+        print(f"  Downloading {fname} from HuggingFace...")
+        os.makedirs(PAGEINDEX_DIR, exist_ok=True)
+        hf_hub_download(
+            repo_id=HF_REPO,
+            repo_type="dataset",
+            filename=f"pageindex_data/{fname}",
+            local_dir=BASE_PATH,
+        )
+        print(f"  {fname} ready!")
+    return fpath
+
+# ─────────────────────────────────────────────
 # PER-USER INDEX (download on demand from HF)
 # ─────────────────────────────────────────────
-
-# Simple in-memory cache for recently used users
 _user_cache = {}
 _USER_CACHE_MAX = 5
 
@@ -75,8 +90,6 @@ def _get_user_page_ids(user_id: str):
     if user_id in _user_cache:
         return _user_cache[user_id]
 
-    # Find which batch this user is in (alphabetical, 1000 per batch)
-    # Try all batches until found
     page_ids = None
     for batch_num in range(11):
         batch = f"batch_{batch_num:02d}"
@@ -85,7 +98,7 @@ def _get_user_page_ids(user_id: str):
                 repo_id=HF_REPO,
                 repo_type="dataset",
                 filename=f"user_index_split/{batch}/{user_id}.json",
-                cache_dir=tempfile.gettempdir(),
+                local_dir=BASE_PATH,
             )
             with open(local, "r") as f:
                 page_ids = json.load(f)
@@ -96,16 +109,14 @@ def _get_user_page_ids(user_id: str):
     if page_ids is None:
         return []
 
-    # Cache with size limit
     if len(_user_cache) >= _USER_CACHE_MAX:
         _user_cache.pop(next(iter(_user_cache)))
     _user_cache[user_id] = page_ids
     return page_ids
 
 # ─────────────────────────────────────────────
-# RECORD FETCHING (from JSONL files on disk)
+# RECORD FETCHING
 # ─────────────────────────────────────────────
-
 def _get_prefix(page_id):
     return page_id.split("_")[0] if "_" in page_id else ""
 
@@ -118,9 +129,7 @@ def _fetch_by_page_ids(page_ids, top_k):
 
     results = {}
     for fname, pids in by_file.items():
-        fpath = os.path.join(PAGEINDEX_DIR, fname)
-        if not os.path.exists(fpath):
-            continue
+        fpath = _ensure_jsonl(fname)
         remaining = set(pids)
         with open(fpath, "r", encoding="utf-8") as f:
             for line in f:
@@ -148,16 +157,22 @@ async def lifespan(app: FastAPI):
     print(f"  PAGEINDEX_STORE : {PAGEINDEX_STORE}")
     print(f"  PAGEINDEX_DIR   : {PAGEINDEX_DIR}")
     _load_small_indexes()
-    print("Server ready — startup RAM ~150MB")
+    print("Server ready — startup RAM ~100MB")
+    print("JSONL files download lazily on first request")
     yield
 
 app = FastAPI(
     title="UFDR Forensic Retriever API",
-    description="Hybrid PageIndex + FAISS retrieval for forensic evidence.",
+    description="Hybrid PageIndex retrieval for forensic evidence.",
     version="1.0.0",
     lifespan=lifespan,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ─────────────────────────────────────────────
 # ENDPOINTS
@@ -180,14 +195,12 @@ def filter_endpoint(
 ):
     candidate_sets = []
 
-    # User index — download from HuggingFace on demand
     if user:
         page_ids = _get_user_page_ids(user)
         if not page_ids:
             return {"count": 0, "results": [], "message": f"User '{user}' not found"}
         candidate_sets.append(set(page_ids))
 
-    # Small indexes — already in RAM
     if date and _date_index:
         candidate_sets.append(set(_date_index.get(date, [])))
     if action and _action_index:
@@ -203,7 +216,6 @@ def filter_endpoint(
     if not candidate_sets:
         return {"count": 0, "results": [], "message": "Provide at least one filter"}
 
-    # Intersect all filter sets
     result_ids = candidate_sets[0]
     for s in candidate_sets[1:]:
         result_ids = result_ids & s
@@ -230,9 +242,7 @@ def record_endpoint(page_id: str):
     fname = _PREFIX_TO_FILE.get(_get_prefix(page_id))
     if not fname:
         raise HTTPException(status_code=404, detail="Not found")
-    fpath = os.path.join(PAGEINDEX_DIR, fname)
-    if not os.path.exists(fpath):
-        raise HTTPException(status_code=404, detail="File not found on server")
+    fpath = _ensure_jsonl(fname)
     with open(fpath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -253,8 +263,8 @@ def stats_endpoint():
         "unique_dates":   len(_date_index),
         "unique_actions": list(_action_index.keys()),
         "unique_hours":   len(_hour_index),
-        "user_index":     "per-user JSON files on HuggingFace (downloaded on demand)",
-        "note":           "startup RAM ~150MB, user queries add ~3-5s for HF download"
+        "user_index":     "per-user JSON on HuggingFace (downloaded on demand)",
+        "jsonl_files":    "downloaded lazily on first request",
     }
 
 
@@ -265,12 +275,9 @@ def http_search_endpoint(
     date:    Optional[str] = Query(None),
     top_k:   int           = Query(50, ge=1, le=200),
 ):
-    path = os.path.join(PAGEINDEX_DIR, "http_sample.jsonl")
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="http_sample.jsonl not found")
-
+    fpath = _ensure_jsonl("http_sample.jsonl")
     results = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(fpath, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
