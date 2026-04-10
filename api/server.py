@@ -1,16 +1,21 @@
 """
 api/server.py
 --------------
-FastAPI server for Render free tier (512MB RAM).
+FastAPI server — works both locally and on Render.
 
-RAM strategy:
+Local machine  → full API including /vector (16GB RAM available)
+Render free    → /filter, /record, /stats, /http_search only
+               → /vector returns 503 (needs 2GB RAM)
+
+Render strategy:
 - Only date/hour/action indexes loaded at startup (~70MB)
-- JSONL files downloaded from HuggingFace on first request (lazy)
+- JSONL files downloaded from HuggingFace on first request
 - Per-user JSON downloaded from HuggingFace on demand
-- Total startup RAM: ~100MB ✅ never OOMs
+- Total startup RAM: ~100MB ✅ never OOMs on Render
 """
 
 import os
+import sys
 import json
 import pickle
 from fastapi import FastAPI, Query, HTTPException
@@ -18,16 +23,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional
 from contextlib import asynccontextmanager
-from huggingface_hub import hf_hub_download
+
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
 PAGEINDEX_STORE = os.getenv("PAGEINDEX_STORE", "D:/dl_proj/pageindex_store")
 PAGEINDEX_DIR   = os.getenv("PAGEINDEX_DIR",   "D:/dl_proj/pageindex_data")
+FAISS_DIR       = os.getenv("FAISS_DIR",       "D:/dl_proj/faiss_index")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 API_PORT        = int(os.getenv("API_PORT", "8000"))
 HF_REPO         = "pisha2410/ufdr-indexes"
 BASE_PATH       = os.path.join(os.path.dirname(__file__), "../data")
+
+# Detect if running locally or on Render
+IS_LOCAL = os.path.exists(PAGEINDEX_STORE) and os.path.exists(
+    os.path.join(PAGEINDEX_STORE, "user_index.pkl")
+)
 
 _PREFIX_TO_FILE = {
     "email":        "email.jsonl",
@@ -40,34 +53,53 @@ _PREFIX_TO_FILE = {
 }
 
 # ─────────────────────────────────────────────
-# SMALL INDEXES (loaded at startup ~70MB)
+# INDEX LOADING
 # ─────────────────────────────────────────────
 _hour_index   = {}
 _date_index   = {}
 _action_index = {}
+_user_index   = None  # only loaded locally
 
-def _load_small_indexes():
-    global _hour_index, _date_index, _action_index
-    for name, target in [
-        ("hour_index.pkl",   "_hour_index"),
-        ("date_index.pkl",   "_date_index"),
-        ("action_index.pkl", "_action_index"),
-    ]:
-        try:
-            path = os.path.join(PAGEINDEX_STORE, name)
-            with open(path, "rb") as f:
-                globals()[target] = pickle.load(f)
-            print(f"  {name} loaded")
-        except Exception as e:
-            print(f"  {name} failed: {e}")
+def _load_indexes():
+    global _hour_index, _date_index, _action_index, _user_index
+
+    if IS_LOCAL:
+        # Local — load all 4 indexes from disk
+        print("  Running locally — loading all indexes...")
+        for name, target in [
+            ("hour_index.pkl",   "_hour_index"),
+            ("date_index.pkl",   "_date_index"),
+            ("action_index.pkl", "_action_index"),
+            ("user_index.pkl",   "_user_index"),
+        ]:
+            try:
+                with open(os.path.join(PAGEINDEX_STORE, name), "rb") as f:
+                    globals()[target] = pickle.load(f)
+                print(f"  {name} loaded ✅")
+            except Exception as e:
+                print(f"  {name} failed: {e}")
+    else:
+        # Render — only load 3 small indexes (~70MB)
+        print("  Running on Render — loading small indexes only...")
+        for name, target in [
+            ("hour_index.pkl",   "_hour_index"),
+            ("date_index.pkl",   "_date_index"),
+            ("action_index.pkl", "_action_index"),
+        ]:
+            try:
+                with open(os.path.join(PAGEINDEX_STORE, name), "rb") as f:
+                    globals()[target] = pickle.load(f)
+                print(f"  {name} loaded ✅")
+            except Exception as e:
+                print(f"  {name} failed: {e}")
 
 # ─────────────────────────────────────────────
-# LAZY JSONL DOWNLOAD
+# HuggingFace lazy download (Render only)
 # ─────────────────────────────────────────────
 def _ensure_jsonl(fname: str) -> str:
-    """Download JSONL file from HuggingFace if not already on disk."""
     fpath = os.path.join(PAGEINDEX_DIR, fname)
     if not os.path.exists(fpath):
+        from huggingface_hub import hf_hub_download
         print(f"  Downloading {fname} from HuggingFace...")
         os.makedirs(PAGEINDEX_DIR, exist_ok=True)
         hf_hub_download(
@@ -80,39 +112,41 @@ def _ensure_jsonl(fname: str) -> str:
     return fpath
 
 # ─────────────────────────────────────────────
-# PER-USER INDEX (download on demand from HF)
+# USER INDEX
 # ─────────────────────────────────────────────
 _user_cache = {}
 _USER_CACHE_MAX = 5
 
 def _get_user_page_ids(user_id: str):
-    """Download per-user JSON from HuggingFace and return page_ids."""
-    if user_id in _user_cache:
-        return _user_cache[user_id]
-
-    page_ids = None
-    for batch_num in range(11):
-        batch = f"batch_{batch_num:02d}"
-        try:
-            local = hf_hub_download(
-                repo_id=HF_REPO,
-                repo_type="dataset",
-                filename=f"user_index_split/{batch}/{user_id}.json",
-                local_dir=BASE_PATH,
-            )
-            with open(local, "r") as f:
-                page_ids = json.load(f)
-            break
-        except Exception:
-            continue
-
-    if page_ids is None:
-        return []
-
-    if len(_user_cache) >= _USER_CACHE_MAX:
-        _user_cache.pop(next(iter(_user_cache)))
-    _user_cache[user_id] = page_ids
-    return page_ids
+    if IS_LOCAL and _user_index is not None:
+        # Local — instant lookup from RAM
+        return _user_index.get(user_id, [])
+    else:
+        # Render — download per-user JSON from HuggingFace
+        if user_id in _user_cache:
+            return _user_cache[user_id]
+        from huggingface_hub import hf_hub_download
+        page_ids = None
+        for batch_num in range(11):
+            batch = f"batch_{batch_num:02d}"
+            try:
+                local = hf_hub_download(
+                    repo_id=HF_REPO,
+                    repo_type="dataset",
+                    filename=f"user_index_split/{batch}/{user_id}.json",
+                    local_dir=BASE_PATH,
+                )
+                with open(local, "r") as f:
+                    page_ids = json.load(f)
+                break
+            except Exception:
+                continue
+        if page_ids is None:
+            return []
+        if len(_user_cache) >= _USER_CACHE_MAX:
+            _user_cache.pop(next(iter(_user_cache)))
+        _user_cache[user_id] = page_ids
+        return page_ids
 
 # ─────────────────────────────────────────────
 # RECORD FETCHING
@@ -153,17 +187,18 @@ def _fetch_by_page_ids(page_ids, top_k):
 # ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("Starting UFDR Retriever Server ...")
+    mode = "LOCAL (full)" if IS_LOCAL else "RENDER (minimal)"
+    print(f"Starting UFDR Retriever Server [{mode}]...")
     print(f"  PAGEINDEX_STORE : {PAGEINDEX_STORE}")
     print(f"  PAGEINDEX_DIR   : {PAGEINDEX_DIR}")
-    _load_small_indexes()
-    print("Server ready — startup RAM ~100MB")
-    print("JSONL files download lazily on first request")
+    print(f"  FAISS_DIR       : {FAISS_DIR}")
+    _load_indexes()
+    print("Server ready!")
     yield
 
 app = FastAPI(
     title="UFDR Forensic Retriever API",
-    description="Hybrid PageIndex retrieval for forensic evidence.",
+    description="Hybrid PageIndex + FAISS retrieval for forensic evidence.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -180,7 +215,12 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "UFDR Retriever"}
+    return {
+        "status": "ok",
+        "service": "UFDR Retriever",
+        "mode": "local" if IS_LOCAL else "render",
+        "vector_search": "available" if IS_LOCAL else "unavailable (needs 2GB RAM)"
+    }
 
 
 @app.get("/filter")
@@ -229,12 +269,25 @@ def filter_endpoint(
 
 
 @app.get("/vector")
-def vector_endpoint(query: str = Query(...)):
-    return JSONResponse(status_code=503, content={
-        "error": "Vector search needs 2GB RAM — unavailable on free tier.",
-        "suggestion": "Use /filter for structured queries.",
-        "local": "Run server locally for /vector: python api/server.py"
-    })
+def vector_endpoint(
+    query:      str           = Query(..., description="Natural language query"),
+    top_k:      int           = Query(20, ge=1, le=100),
+    user:       Optional[str] = Query(None),
+    event_type: Optional[str] = Query(None),
+):
+    if not IS_LOCAL:
+        return JSONResponse(status_code=503, content={
+            "error": "Vector search needs 2GB RAM — unavailable on Render free tier.",
+            "suggestion": "Use /filter for structured queries.",
+            "local": "Run server locally: python run_server.py"
+        })
+
+    from indexing.retriever_api import get_by_vector
+    results = get_by_vector(
+        query_text=query, top_k=top_k,
+        user=user, event_type=event_type
+    )
+    return {"count": len(results), "results": results}
 
 
 @app.get("/record/{page_id}")
@@ -260,11 +313,12 @@ def record_endpoint(page_id: str):
 @app.get("/stats")
 def stats_endpoint():
     return {
+        "mode":           "local" if IS_LOCAL else "render",
         "unique_dates":   len(_date_index),
         "unique_actions": list(_action_index.keys()),
         "unique_hours":   len(_hour_index),
-        "user_index":     "per-user JSON on HuggingFace (downloaded on demand)",
-        "jsonl_files":    "downloaded lazily on first request",
+        "user_index":     "loaded in RAM" if IS_LOCAL else "per-user JSON on HuggingFace",
+        "vector_search":  "available" if IS_LOCAL else "unavailable on free tier",
     }
 
 
