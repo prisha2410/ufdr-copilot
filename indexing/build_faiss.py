@@ -4,23 +4,24 @@ indexing/build_faiss.py
 STEP 5 of the pipeline.
 
 Builds a single unified FAISS index for ALL event types including http.
-
-Strategy:
-- email/logon/device/file/ldap/psychometric → load embeddings from ChromaDB (fast, no re-embedding)
-- http.jsonl → embed fresh from JSONL using GPU
+Embeds directly from JSONL files using GPU (no ChromaDB dependency).
 
 Saves:
     faiss_index/events.index      <- FAISS binary index (all event types)
     faiss_index/page_id_map.pkl   <- position -> page_id lookup
 
-Run after build_chroma.py:
+Run after build_pageindex.py:
     python indexing/build_faiss.py
 
 Environment variables required (set in .env):
     PAGEINDEX_DIR   = path to pageindex_data/ folder
     FAISS_DIR       = path to faiss_index/ folder
-    CHROMA_DIR      = path to chroma_store/ folder
     EMBEDDING_MODEL = sentence transformer model name
+
+Estimated time on RTX 3050:
+    email/logon/device/file/ldap/psychometric (~1.67M records) -> ~1 hour
+    http.jsonl (~10.8M records)                                -> ~3-4 hours
+    Total                                                      -> ~4-5 hours
 """
 
 import sys
@@ -36,7 +37,7 @@ import numpy as np
 import faiss
 import torch
 from sentence_transformers import SentenceTransformer
-from configs.paths import PAGEINDEX_DIR, FAISS_DIR, CHROMA_DIR, EMBEDDING_MODEL, check_paths
+from configs.paths import PAGEINDEX_DIR, FAISS_DIR, EMBEDDING_MODEL, check_paths
 
 # ─────────────────────────────────────────────
 # VALIDATE
@@ -49,23 +50,18 @@ os.makedirs(FAISS_DIR, exist_ok=True)
 INDEX_FILE = os.path.join(FAISS_DIR, "events.index")
 MAP_FILE   = os.path.join(FAISS_DIR, "page_id_map.pkl")
 
-# Files to load from ChromaDB (already embedded)
-CHROMA_FILES = [
+# All event types including http
+JSONL_FILES = [
     "email.jsonl",
     "logon.jsonl",
     "device.jsonl",
     "file.jsonl",
     "ldap.jsonl",
     "psychometric.jsonl",
-]
-
-# Files to embed fresh from JSONL
-FRESH_FILES = [
     "http.jsonl",
 ]
 
-COLLECTION  = "ufdr_events"
-ENCODE_BATCH = 512
+ENCODE_BATCH = 1_000   # bigger batch = faster on GPU
 READ_BATCH   = 1_000
 DIM          = 384
 
@@ -75,76 +71,60 @@ DIM          = 384
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 print("=" * 60)
-print("STEP 5: Build Unified FAISS Index")
+print("STEP 5: Build Unified FAISS Index (all event types)")
 print("=" * 60)
-print(f"  ChromaDB files : {', '.join(CHROMA_FILES)}")
-print(f"  Fresh embed    : {', '.join(FRESH_FILES)}")
-print(f"  Device         : {device.upper()}")
+print(f"  Source  : {PAGEINDEX_DIR}")
+print(f"  Output  : {FAISS_DIR}")
+print(f"  Model   : {EMBEDDING_MODEL}")
+print(f"  Device  : {device.upper()}")
 if device == "cuda":
-    print(f"  GPU            : {torch.cuda.get_device_name(0)}")
+    print(f"  GPU     : {torch.cuda.get_device_name(0)}")
+print(f"  Files   : {', '.join(JSONL_FILES)}")
 print()
 
-all_embeddings = []
-all_page_ids   = []
-
 # ─────────────────────────────────────────────
-# STEP A: Load from ChromaDB (fast)
+# LOAD MODEL
 # ─────────────────────────────────────────────
-print("Loading embeddings from ChromaDB...")
-
-import chromadb
-client     = chromadb.PersistentClient(path=CHROMA_DIR)
-collection = client.get_collection(COLLECTION)
-total_chroma = collection.count()
-print(f"  ChromaDB has {total_chroma:,} records")
-
-CHROMA_BATCH = 5000
-offset = 0
-
-while offset < total_chroma:
-    result = collection.get(
-        limit=CHROMA_BATCH,
-        offset=offset,
-        include=["embeddings", "ids"]
-    )
-    if not result["ids"]:
-        break
-
-    embs = np.array(result["embeddings"], dtype=np.float32)
-    ids  = result["ids"]
-
-    all_embeddings.append(embs)
-    all_page_ids.extend(ids)
-    offset += len(ids)
-    print(f"  Loaded {offset:,} / {total_chroma:,} from ChromaDB...", end="\r")
-
-print(f"\n  ChromaDB load complete — {len(all_page_ids):,} records")
-
-# ─────────────────────────────────────────────
-# STEP B: Embed http.jsonl fresh (GPU)
-# ─────────────────────────────────────────────
-print(f"\nEmbedding fresh files using {device.upper()}...")
 print("Loading embedding model...")
 model = SentenceTransformer(EMBEDDING_MODEL, device=device)
 print(f"  Model loaded on {device.upper()}")
 
-for fname in FRESH_FILES:
+# ─────────────────────────────────────────────
+# COUNT TOTAL FOR ESTIMATE
+# ─────────────────────────────────────────────
+print("\nCounting records...")
+file_counts = {}
+for fname in JSONL_FILES:
+    path = os.path.join(PAGEINDEX_DIR, fname)
+    if os.path.exists(path):
+        count = sum(1 for _ in open(path, "r", encoding="utf-8"))
+        file_counts[fname] = count
+        print(f"  {fname}: {count:,}")
+    else:
+        print(f"  {fname}: NOT FOUND - will skip")
+
+total_records = sum(file_counts.values())
+secs_per_batch = 2 if device == "cuda" else 20
+est_min = (total_records // READ_BATCH * secs_per_batch) // 60
+print(f"\n  Total records : {total_records:,}")
+print(f"  Estimated time: ~{est_min} minutes on {device.upper()}")
+print()
+
+# ─────────────────────────────────────────────
+# BUILD INDEX
+# ─────────────────────────────────────────────
+all_embeddings = []
+all_page_ids   = []
+grand_total    = 0
+
+for fname in JSONL_FILES:
     path = os.path.join(PAGEINDEX_DIR, fname)
     if not os.path.exists(path):
         print(f"  SKIP (not found): {fname}")
         continue
 
-    # Count lines for progress
-    print(f"\n  Counting records in {fname}...")
-    total_lines = sum(1 for _ in open(path, "r", encoding="utf-8"))
-    print(f"  Total records: {total_lines:,}")
-
-    # Estimate time
-    batches = total_lines // READ_BATCH
-    secs_per_batch = 2 if device == "cuda" else 20
-    est_min = (batches * secs_per_batch) // 60
-    print(f"  Estimated time: ~{est_min} minutes on {device.upper()}")
-    print(f"\n  Embedding {fname}...")
+    total_lines = file_counts.get(fname, 0)
+    print(f"\n  Embedding {fname} ({total_lines:,} records)...")
 
     batch_texts = []
     batch_ids   = []
@@ -176,7 +156,7 @@ for fname in FRESH_FILES:
                 all_embeddings.append(embs)
                 all_page_ids.extend(batch_ids)
                 file_count += len(batch_ids)
-                pct = file_count / total_lines * 100
+                pct = file_count / total_lines * 100 if total_lines else 0
                 print(f"    {file_count:,} / {total_lines:,} ({pct:.1f}%)", end="\r")
                 batch_texts = []
                 batch_ids   = []
@@ -193,14 +173,15 @@ for fname in FRESH_FILES:
         all_page_ids.extend(batch_ids)
         file_count += len(batch_ids)
 
-    print(f"\n  {fname} done — {file_count:,} records embedded")
+    print(f"\n    {fname} done — {file_count:,} records")
+    grand_total += file_count
+
+print(f"\n  Total embedded: {grand_total:,} records")
 
 # ─────────────────────────────────────────────
 # BUILD FAISS INDEX
 # ─────────────────────────────────────────────
-print(f"\nBuilding FAISS index...")
-print(f"  Total vectors: {len(all_page_ids):,}")
-
+print("\nBuilding FAISS index...")
 matrix = np.vstack(all_embeddings).astype(np.float32)
 faiss.normalize_L2(matrix)
 
