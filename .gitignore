@@ -42,3 +42,8 @@ Thumbs.db
 .env
 *.env
 server.env
+
+data/
+__pycache__/
+*.pyc
+.cache/
