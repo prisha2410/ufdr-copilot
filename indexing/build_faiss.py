@@ -179,16 +179,81 @@ for fname in JSONL_FILES:
 print(f"\n  Total embedded: {grand_total:,} records")
 
 # ─────────────────────────────────────────────
-# BUILD FAISS INDEX
+# BUILD FAISS INDEX IN BATCHES
 # ─────────────────────────────────────────────
-print("\nBuilding FAISS index...")
-matrix = np.vstack(all_embeddings).astype(np.float32)
-faiss.normalize_L2(matrix)
+print("\nBuilding FAISS index in batches...")
 
-dim   = matrix.shape[1]
+dim   = DIM
 index = faiss.IndexFlatIP(dim)
-index.add(matrix)
-print(f"  Index built — {index.ntotal:,} vectors, dim={dim}")
+
+all_page_ids  = []
+grand_total   = 0
+
+for fname in JSONL_FILES:
+    path = os.path.join(PAGEINDEX_DIR, fname)
+    if not os.path.exists(path):
+        print(f"  SKIP (not found): {fname}")
+        continue
+
+    total_lines = file_counts.get(fname, 0)
+    print(f"\n  Embedding {fname} ({total_lines:,} records)...")
+
+    batch_texts = []
+    batch_ids   = []
+    file_count  = 0
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                text   = record.get("normalized_text") or record.get("text", "")
+                pid    = record.get("page_id")
+                if not pid:
+                    continue
+                batch_texts.append(text)
+                batch_ids.append(pid)
+            except Exception:
+                continue
+
+            if len(batch_texts) >= READ_BATCH:
+                embs = model.encode(
+                    batch_texts,
+                    batch_size=ENCODE_BATCH,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                ).astype(np.float32)
+
+                faiss.normalize_L2(embs)
+                index.add(embs)
+                all_page_ids.extend(batch_ids)
+
+                file_count += len(batch_ids)
+                pct = file_count / total_lines * 100 if total_lines else 0
+                print(f"    {file_count:,} / {total_lines:,} ({pct:.1f}%)", end="\r")
+
+                batch_texts = []
+                batch_ids   = []
+
+    # Final batch
+    if batch_texts:
+        embs = model.encode(
+            batch_texts,
+            batch_size=ENCODE_BATCH,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        ).astype(np.float32)
+        faiss.normalize_L2(embs)
+        index.add(embs)
+        all_page_ids.extend(batch_ids)
+        file_count += len(batch_ids)
+
+    print(f"\n    {fname} done — {file_count:,} records")
+    grand_total += file_count
+
+print(f"\n  Total indexed: {grand_total:,} vectors")
 
 # ─────────────────────────────────────────────
 # SAVE
@@ -197,11 +262,3 @@ print("\nSaving...")
 faiss.write_index(index, INDEX_FILE)
 with open(MAP_FILE, "wb") as f:
     pickle.dump(all_page_ids, f)
-
-idx_gb = os.path.getsize(INDEX_FILE) / 1024 / 1024 / 1024
-map_mb = os.path.getsize(MAP_FILE) / 1024 / 1024
-print(f"  events.index    saved ({idx_gb:.2f} GB)")
-print(f"  page_id_map.pkl saved ({map_mb:.1f} MB)")
-
-print(f"\nSTEP 5 COMPLETE — {index.ntotal:,} vectors in unified FAISS index")
-print("Includes: email, logon, device, file, ldap, psychometric, http")
