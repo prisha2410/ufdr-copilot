@@ -33,6 +33,7 @@ JSONL_FILES = [
     "file.jsonl",
     "ldap.jsonl",
     "psychometric.jsonl",
+    "http.jsonl",
 ]
 
 INDEX_FILE = os.path.join(FAISS_DIR, "events.index")
