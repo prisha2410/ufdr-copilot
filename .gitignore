@@ -47,3 +47,21 @@ data/
 __pycache__/
 *.pyc
 .cache/
+
+.env
+
+
+# Data folders (too large for git)
+data/
+embeddings/
+D:/dl_proj/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.pkl
+*.index
+
+# Env
+.env
