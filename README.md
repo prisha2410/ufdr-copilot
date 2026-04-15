@@ -4,152 +4,126 @@ MSc Data Science Group Project | CERT Insider Threat Dataset r4.2 | Due May 5, 2
 
 ---
 
-## How to Use the API (All Members Read This)
+## Setup (Each Member — One Time)
 
-There are two ways to access the API. Use **Option A** for all real work.
-
-### Option A — Google Colab (RECOMMENDED — Full API, Free)
-
-**This is the main way to run the API.**
-
-1. Open `colab_server.ipynb` from this repo in Google Colab
-2. Go to **Runtime → Run all**
-3. Wait 5-10 minutes for indexes to download
-4. Copy the ngrok URL from Cell 6 output
-5. Share URL in group chat
-6. Keep the Colab tab open while team works
-
-**Anyone on the team can do this.** Whoever starts work first runs the notebook.
-
-### Option B — Render (Health Check Only)
-
-```
-https://ufdr-copilot-api.onrender.com/health
-```
-
-This always works but only for `/health`. Real queries need Colab (Option A).
-
----
-
-## Quick Start for Members
-
+### Step 1 — Clone repo
 ```bash
-# 1. Clone repo
 git clone https://github.com/prisha2410/ufdr-copilot.git
 cd ufdr-copilot
-
-# 2. Install
 pip install -r requirements.txt
-
-# 3. Create .env with the Colab URL shared in group chat
-echo "RETRIEVER_HOST=https://YOUR-NGROK-URL.ngrok-free.app" > .env
-
-# 4. Use the client
-python -c "
-from client.retriever_client import RetrieverClient
-client = RetrieverClient()
-print(client.filter(user='LAP0338', top_k=3))
-"
 ```
 
-> Note: Update RETRIEVER_HOST in .env each time a new Colab session starts (URL changes per session)
+### Step 2 — Get indexes from Member 1
+Member 1 will give you a hard disk with:
+```
+pageindex_store/   → pkl index maps
+pageindex_data/    → JSONL event files
+faiss_index/       → FAISS vectors
+chroma_store/      → ChromaDB (optional)
+answers/           → ground truth files
+```
+Copy these folders anywhere on your machine.
+
+### Step 3 — Create .env file
+Create a file called `.env` in the repo root:
+```
+DATA_PATH=C:/your_path/r4.2
+PROCESSED_DIR=C:/your_path/processed_data
+PAGEINDEX_DIR=C:/your_path/pageindex_data
+PAGEINDEX_STORE=C:/your_path/pageindex_store
+FAISS_DIR=C:/your_path/faiss_index
+CHROMA_DIR=C:/your_path/chroma_store
+INSIDERS_CSV=C:/your_path/answers/insiders.csv
+SCENARIOS_FILE=C:/your_path/answers/scenarios.txt
+```
+Replace `C:/your_path/` with where you saved the data.
+
+### Step 4 — Test setup
+```python
+from indexing.retriever_api import get_by_filter
+records = get_by_filter(user="LAP0338", top_k=5)
+print(f"Found {len(records)} records")
+```
 
 ---
 
-## API Endpoints
-
-| Endpoint | Description | Example |
-|----------|-------------|---------|
-| GET /health | Liveness check | /health |
-| GET /filter | Structured PageIndex query | /filter?user=LAP0338&action=connect_device |
-| GET /vector | Semantic FAISS search | /vector?query=data+theft+after+hours |
-| GET /record/{page_id} | Single record lookup | /record/email_000123 |
-| GET /stats | Index statistics | /stats |
-| GET /http_search | Browsing log search | /http_search?keyword=wikileaks |
-| GET /docs | Full API documentation | /docs |
-
----
-
-## Client Usage
+## How to Use the Retriever
 
 ```python
-from client.retriever_client import RetrieverClient
-client = RetrieverClient()  # reads RETRIEVER_HOST from .env
+from indexing.retriever_api import get_by_filter, get_by_vector, get_by_id
 
 # Structured filter — fast, uses index maps
-records = client.filter(user="LAP0338", action="connect_device", hour_min=18)
-records = client.filter(date="2010-02-01", event_type="email")
-records = client.filter(action="file_copy", hour_min=18, hour_max=23)
+records = get_by_filter(user="LAP0338", action="connect_device", hour_min=18)
+records = get_by_filter(date="2010-02-01", event_type="email")
+records = get_by_filter(action="file_copy", hour_min=18, hour_max=23)
 
 # Semantic search — natural language
-records = client.vector("employee stealing data before leaving company")
-records = client.vector("suspicious USB activity after hours")
+records = get_by_vector("employee stealing data before leaving company")
+records = get_by_vector("suspicious USB activity after hours")
 
-# HTTP browsing search
-records = client.http_search(keyword="wikileaks")
-records = client.http_search(keyword="dropbox", user="LAP0338")
+# HTTP browsing search (needs http FAISS index)
+records = get_by_vector("wikileaks upload", search_http=True)
 
 # Single record lookup
-record = client.get_record("email_000123")
+record = get_by_id("email_000123")
+
+# Full user timeline
+from indexing.retriever_api import get_user_timeline
+timeline = get_user_timeline("LAP0338")
 ```
 
 ---
 
-## Team Roles
+## Team Roles & Branches
 
-| Member | Role | Branch | Status |
-|--------|------|--------|--------|
-| Member 1 (Prisha) | Data & Indexing | indexing | DONE ✅ |
-| Member 2 | Retrieval & Reranker | retrieval | In progress |
-| Member 3 | Agent & Tool Policy | agent | In progress |
-| Member 4 | Case, Graph & Report | case-engine | In progress |
+| Member | Role | Branch | Uses |
+|--------|------|--------|------|
+| Member 1 | Data & Indexing | indexing | builds everything |
+| Member 2 | Retrieval & Reranker | retrieval | get_by_filter, get_by_vector |
+| Member 3 | Agent & Tool Policy | agent | get_by_filter, get_by_vector |
+| Member 4 | Case, Graph & Report | case-engine | get_by_id, get_user_timeline |
 
 ---
 
-## Architecture
+## Project Structure
 
 ```
-CERT r4.2 CSVs
-      ↓
-data_pipeline.py        → JSONL files (1.67M records)
-enhance_pageindex.py    → adds page_id, date, hour, action
-      ↓
-build_pageindex.py      → user/action/date/hour index maps
-build_chroma.py         → ChromaDB vector store
-build_faiss.py          → FAISS index (384-dim, 1.67M vectors)
-      ↓
-retriever_api.py        → core retrieval logic
-server.py               → FastAPI server (6 endpoints)
-      ↓
-Google Colab            → full API (12GB RAM, free)
-Render                  → health check only (512MB RAM limit)
-```
-
-### Where data lives
-
-```
-HuggingFace pisha2410/ufdr-indexes:
-  pageindex_store/     → pkl index maps
-  pageindex_data/      → JSONL event files
-  faiss_index/         → FAISS vectors
-  user_index_split/    → per-user JSON files
+ufdr-copilot/
+├── configs/
+│   └── paths.py              ← paths read from .env
+├── data_pipeline/
+│   ├── data_pipeline.py      ← Step 1: CSV to JSONL
+│   └── enhance_pageindex.py  ← Step 2: add PageIndex fields
+├── indexing/
+│   ├── build_pageindex.py    ← Step 3: build index maps
+│   ├── build_chroma.py       ← Step 4: build ChromaDB
+│   ├── build_faiss.py        ← Step 5: build FAISS (all events)
+│   ├── build_faiss_http.py   ← Step 6: build FAISS for http
+│   └── retriever_api.py      ← what teammates import
+├── retrieval/                ← Member 2 work here
+├── agent/                    ← Member 3 work here
+├── case_engine/              ← Member 4 work here
+├── evaluation/               ← evaluation pipeline
+└── answers/
+    ├── insiders.csv          ← ground truth
+    └── scenarios.txt         ← scenario descriptions
 ```
 
 ---
 
 ## Dataset
 
-CERT Insider Threat Dataset r4.2 (Carnegie Mellon SEI)
+CERT Insider Threat Dataset r4.2
 
-| File | Records | Notes |
-|------|---------|-------|
-| email.jsonl | 1,000,037 | Full |
-| logon.jsonl | 329,511 | Full |
-| device.jsonl | 156,911 | Full |
-| file.jsonl | 171,112 | Full |
-| http_sample.jsonl | 1,082,684 | 10% unbiased sample |
-| ldap.jsonl | 16,743 | Full |
-| psychometric.jsonl | 1,000 | Full |
+| File | Records |
+|------|---------|
+| email.jsonl | 1,000,037 |
+| logon.jsonl | 329,511 |
+| device.jsonl | 156,911 |
+| file.jsonl | 171,112 |
+| http.jsonl | ~3 million |
+| ldap.jsonl | 16,743 |
+| psychometric.jsonl | 1,000 |
 
 Temporal filter: Jan 1 – Jun 30, 2010
 
@@ -157,46 +131,12 @@ Temporal filter: Jan 1 – Jun 30, 2010
 
 ## Insider Threat Scenarios
 
-| # | Type | Key Signals | Best Endpoints |
-|---|------|-------------|----------------|
-| 1 | USB + Wikileaks exfiltration | after-hours login, USB, wikileaks URL | /filter + /http_search |
-| 2 | Job switching + data theft | job site URLs, file downloads | /http_search + /filter |
-| 3 | Malicious admin (keylogger) | unusual file access, mass email | /filter + /vector |
-| 4 | Insider snooping | login to other machines | /filter |
-| 5 | Layoff revenge via Dropbox | dropbox URLs, bulk uploads | /http_search + /filter |
+| # | Type | Detection Query |
+|---|------|----------------|
+| 1 | USB + Wikileaks | get_by_filter(action="connect_device", hour_min=18) + get_by_vector("wikileaks", search_http=True) |
+| 2 | Job switching | get_by_vector("job search linkedin", search_http=True) |
+| 3 | Malicious admin | get_by_vector("suspicious file access mass email") |
+| 4 | Insider snooping | get_by_filter(user="X", event_type="logon") |
+| 5 | Dropbox revenge | get_by_vector("dropbox upload", search_http=True) |
 
-Ground truth: `answers/insiders.csv` + `answers/scenarios.txt`
-
----
-
-## Evaluation Metrics
-
-| Metric | Description |
-|--------|-------------|
-| Recall@K | % of relevant evidence in top-K |
-| Precision@K | % of retrieved results that are relevant |
-| Grounding Score | % of claims backed by cited page_id |
-| Tool Accuracy | % correct tool decisions by agent |
-
----
-
-## Local Development
-
-```bash
-# Run server locally (needs local indexes)
-python api/server.py
-
-# Server at http://localhost:8000
-# Docs at http://localhost:8000/docs
-
-# Edit configs/paths.py for your local paths
-```
-
----
-
-## Notes
-
-- `/vector` requires FAISS + sentence-transformers (works on Colab, not Render free tier)
-- `/http_search` uses 10% unbiased random sample of http.jsonl
-- Colab URL changes each session — update .env and share with team
-- For demo day: run Colab 10 min early, share URL before demo starts
+Ground truth: `answers/insiders.csv`
